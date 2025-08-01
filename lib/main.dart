@@ -229,13 +229,14 @@ class _AutoLoginWebViewState extends State<AutoLoginWebView> {
       }
     }
 
-    // Синхронизируем куки с последним токеном
-    final freshToken = await _storage.read(key: 'jwt');
-    if (freshToken != null) {
-      await _syncCookiesAndLoad(freshToken);
-    } else {
-      await _logout();
-    }
+final freshTokenNullable = await _storage.read(key: 'jwt');
+if (freshTokenNullable != null) {
+  // Явно приводим к non-nullable локальной переменной
+  final freshToken = freshTokenNullable;
+  await _syncCookiesAndLoad(freshToken);
+} else {
+  await _logout();
+}
   }
 
   /// Попытка обновить токен по схеме refresh-token
