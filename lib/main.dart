@@ -3,7 +3,7 @@
 // Полный Flutter-код с:
 //  - логином под любым пользователем
 //  - автоматическим выходом при истечении JWT
-//  - обработкой 401/403 сессии и авто-лог-аутом
+//  - обработкой 401/403 и авто-лог-аутом
 //  - логированием и SnackBar для ошибок
 //  - опциональной схемой refresh-token
 // ---------------------------------------------------------
@@ -48,7 +48,8 @@ int _parseExpiry(String jwt) {
   try {
     final parts = jwt.split('.');
     if (parts.length != 3) return 0;
-    final payload = utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
+    final payload = utf8
+        .decode(base64Url.decode(base64Url.normalize(parts[1])));
     final map = jsonDecode(payload) as Map<String, dynamic>;
     return map['exp'] as int? ?? 0;
   } catch (_) {
@@ -63,7 +64,7 @@ void _showSnackBar(BuildContext context, String message) {
   );
 }
 
-/// Точка входа: если токен есть и не истёк — WebView, иначе — экран логина
+/// Точка входа: если токен есть и валиден — WebView, иначе — экран логина
 class EntryPoint extends StatefulWidget {
   const EntryPoint({Key? key}) : super(key: key);
 
@@ -210,21 +211,31 @@ class _AutoLoginWebViewState extends State<AutoLoginWebView> {
     _initAndLoad();
   }
 
+  /// Инициализация: проверка токена и синхронизация куки
   Future<void> _initAndLoad() async {
     final token = await _storage.read(key: 'jwt');
     if (token == null) {
-      _logout();
+      await _logout();
       return;
     }
+
     // Проверяем срок жизни токена
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     if (now >= _parseExpiry(token)) {
-      if (!await _tryRefresh(token)) {
-        _logout();
+      final didRefresh = await _tryRefresh(token);
+      if (!didRefresh) {
+        await _logout();
         return;
       }
     }
-    await _syncCookiesAndLoad(await _storage.read(key: 'jwt')!);
+
+    // Синхронизируем куки с последним токеном
+    final freshToken = await _storage.read(key: 'jwt');
+    if (freshToken != null) {
+      await _syncCookiesAndLoad(freshToken);
+    } else {
+      await _logout();
+    }
   }
 
   /// Попытка обновить токен по схеме refresh-token
@@ -252,12 +263,10 @@ class _AutoLoginWebViewState extends State<AutoLoginWebView> {
     }
   }
 
+  /// Синхронизация куки и загрузка WebView
   Future<void> _syncCookiesAndLoad(String jwtToken) async {
-    setState(() {
-      _loading = true;
-    });
+    setState(() => _loading = true);
     try {
-      // Запрашиваем WP-куки
       final res = await http.get(
         Uri.parse('$baseUrl/wp-json/custom/v1/get-auth-cookies'),
         headers: {
@@ -267,14 +276,13 @@ class _AutoLoginWebViewState extends State<AutoLoginWebView> {
       );
       if (res.statusCode == 401 || res.statusCode == 403) {
         _showSnackBar(context, 'Сессия истекла, повторный вход…');
-        _logout();
+        await _logout();
         return;
       }
       if (res.statusCode != 200) {
         throw 'Ошибка получения куки: ${res.statusCode}';
       }
 
-      // Собираем куки из ответа
       final raw = jsonDecode(res.body) as List<dynamic>;
       final cookies = <Map<String, String>>[];
       for (final item in raw) {
@@ -285,17 +293,14 @@ class _AutoLoginWebViewState extends State<AutoLoginWebView> {
           'path':   item['path']   as String,
         });
       }
-      // Убираем дубли по name+path
       final unique = {
         for (var c in cookies) '${c['name']}:${c['path']}': c
       }.values.toList();
 
-      // Передаём в iOS WKWebView
       await _cookieChannel.invokeMethod('setCookies', {
         'cookies': unique,
       });
 
-      // Запускаем WebView
       final ctrl = WebViewController();
       ctrl
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -305,6 +310,7 @@ class _AutoLoginWebViewState extends State<AutoLoginWebView> {
           }),
         )
         ..loadRequest(Uri.parse('$baseUrl/mobile-app-home-subscriber/'));
+
       setState(() => _controller = ctrl);
     } catch (e) {
       _showSnackBar(context, 'Ошибка: $e');
