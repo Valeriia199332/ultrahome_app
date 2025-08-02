@@ -1,4 +1,4 @@
-name: Flutter CI
+name: Flutter iOS CI
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
       - main
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-ios:
+    runs-on: macos-latest     # ⚠️ macOS требуется для iOS-скидки
 
     steps:
       - name: Checkout repository
@@ -30,16 +30,5 @@ jobs:
       - name: Run tests
         run: flutter test --coverage
 
-      - name: Build Android APK
-        run: flutter build apk --release
-
       - name: Build iOS (no codesign)
         run: flutter build ios --no-codesign
-
-      # Опционально, чтобы сохранять артефакт APK:
-      # - name: Upload APK artifact
-      #   uses: actions/upload-artifact@v3
-      #   with:
-      #     name: app-release.apk
-      #     path: build/app/outputs/flutter-apk/app-release.apk
-
