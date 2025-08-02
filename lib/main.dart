@@ -1,14 +1,9 @@
-// ---------------------------------------------------------
 // main.dart
-// Полный Flutter-код с:
-//  - логином под любым пользователем
-//  - автоматическим выходом при истечении JWT
-//  - обработкой 401/403 и авто-лог-аутом
-//  - логированием и SnackBar для ошибок
-//  - опциональной схемой refresh-token
-// ---------------------------------------------------------
+// Полный код с экранами Login, Registration и WebView (iOS-only)
+// Сохраните в lib/main.dart
 
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -18,12 +13,17 @@ import 'package:webview_flutter/webview_flutter.dart';
 /// Константы приложения
 const String baseUrl = 'https://ultrahomeservices.net';
 
+/// Наша цветовая палитра
+const Color kGold  = Color(0xFFD4AF37);
+const Color kBlack = Colors.black;
+const Color kBeige = Color(0xFFF5F5DC);
+
 /// MethodChannel для установки куки в iOS WKWebView
 const MethodChannel _cookieChannel =
     MethodChannel('net.ultrahomeservices/cookie');
 
-/// Локальное хранилище для JWT и refresh-token
-final FlutterSecureStorage _storage = FlutterSecureStorage();
+/// Локальное хранилище для JWT
+final _storage = FlutterSecureStorage();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -37,164 +37,280 @@ class UltraHomeApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'UltraHome Services',
-      theme: ThemeData(primarySwatch: Colors.amber),
+      theme: ThemeData(
+        primaryColor: kGold,
+        scaffoldBackgroundColor: kBeige,
+      ),
       home: const EntryPoint(),
     );
   }
 }
 
-/// Парсим exp из payload JWT (универсальный, без внешних пакетов).
-int _parseExpiry(String jwt) {
-  try {
-    final parts = jwt.split('.');
-    if (parts.length != 3) return 0;
-    final payload = utf8
-        .decode(base64Url.decode(base64Url.normalize(parts[1])));
-    final map = jsonDecode(payload) as Map<String, dynamic>;
-    return map['exp'] as int? ?? 0;
-  } catch (_) {
-    return 0;
-  }
-}
-
-/// Показываем SnackBar в любом месте
-void _showSnackBar(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(message)),
-  );
-}
-
-/// Точка входа: если токен есть и валиден — WebView, иначе — экран логина
-class EntryPoint extends StatefulWidget {
+/// Проверяем токен и показываем соответствующий экран
+class EntryPoint extends StatelessWidget {
   const EntryPoint({Key? key}) : super(key: key);
 
-  @override
-  State<EntryPoint> createState() => _EntryPointState();
-}
-
-class _EntryPointState extends State<EntryPoint> {
-  bool? _hasValidToken;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkToken();
-  }
-
-  Future<void> _checkToken() async {
-    final token = await _storage.read(key: 'jwt');
-    if (token == null) {
-      setState(() => _hasValidToken = false);
-      return;
-    }
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final exp = _parseExpiry(token);
-    if (exp == 0 || now >= exp) {
-      await _storage.delete(key: 'jwt');
-      await _storage.delete(key: 'refresh_token');
-      setState(() => _hasValidToken = false);
-    } else {
-      setState(() => _hasValidToken = true);
-    }
+  Future<bool> _hasToken() async {
+    final t = await _storage.read(key: 'jwt');
+    return t != null && t.isNotEmpty;
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_hasValidToken == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-    return _hasValidToken == true
-        ? const AutoLoginWebView()
-        : const LoginPage();
+    return FutureBuilder<bool>(
+      future: _hasToken(),
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        return snap.data! ? const AutoLoginWebView() : const AuthScreen();
+      },
+    );
   }
 }
 
-/// Экран логина
-class LoginPage extends StatefulWidget {
-  const LoginPage({Key? key}) : super(key: key);
+/// Общий декоратор для полей
+InputDecoration _fieldDecoration(String label) => InputDecoration(
+      labelText: label,
+      labelStyle: TextStyle(color: kBlack),
+      filled: true,
+      fillColor: kBeige,
+      border: OutlineInputBorder(
+        borderSide: BorderSide(color: kGold),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderSide: BorderSide(color: kGold, width: 2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+    );
 
+/// Экран с двумя вкладками: Login и Registration
+class AuthScreen extends StatefulWidget {
+  const AuthScreen({Key? key}) : super(key: key);
   @override
-  State<LoginPage> createState() => _LoginPageState();
+  State<AuthScreen> createState() => _AuthScreenState();
 }
 
-class _LoginPageState extends State<LoginPage> {
-  final _userController = TextEditingController();
-  final _passController = TextEditingController();
-  bool _loading = false;
-
-  Future<void> _login() async {
-    setState(() => _loading = true);
-    try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/wp-json/jwt-auth/v1/token'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'username': _userController.text.trim(),
-          'password': _passController.text,
-        }),
-      );
-      if (res.statusCode != 200) {
-        _showSnackBar(context, 'Неправильные логин/пароль (${res.statusCode})');
-        return;
-      }
-      final body = jsonDecode(res.body);
-      final token = body['token'] as String?;
-      final refresh = body['refresh_token'] as String?;
-      if (token == null) throw 'No token in response';
-      await _storage.write(key: 'jwt', value: token);
-      if (refresh != null) {
-        await _storage.write(key: 'refresh_token', value: refresh);
-      }
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const AutoLoginWebView(),
-          transitionsBuilder: (_, a, __, c) =>
-              FadeTransition(opacity: a, child: c),
-        ),
-      );
-    } catch (e) {
-      _showSnackBar(context, 'Ошибка логина: $e');
-    } finally {
-      setState(() => _loading = false);
-    }
+class _AuthScreenState extends State<AuthScreen> with TickerProviderStateMixin {
+  late final TabController _tabController;
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Login')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            TextField(
-              controller: _userController,
-              decoration: const InputDecoration(labelText: 'Username or Email'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _passController,
-              decoration: const InputDecoration(labelText: 'Password'),
-              obscureText: true,
-            ),
-            const SizedBox(height: 24),
-            const Spacer(),
-            ElevatedButton(
-              onPressed: _loading ? null : _login,
-              child: _loading
-                  ? const CircularProgressIndicator(color: Colors.white)
-                  : const Text('Login'),
-            ),
-          ],
+      backgroundColor: kBeige,
+      appBar: AppBar(
+        backgroundColor: kGold,
+        title: const Text('UltraHome Services', style: TextStyle(color: kBlack)),
+        bottom: TabBar(
+          controller: _tabController,
+          indicatorColor: kBlack,
+          labelColor: kBlack,
+          unselectedLabelColor: kBlack.withOpacity(0.6),
+          tabs: const [ Tab(text: 'Login'), Tab(text: 'Register') ],
         ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: const [ LoginForm(), RegistrationForm() ],
       ),
     );
   }
 }
 
-/// WebView с автологином и кнопкой Logout
+/// Логотип + приветствие
+class _LogoWelcome extends StatelessWidget {
+  const _LogoWelcome({Key? key}) : super(key: key);
+  @override
+  Widget build(BuildContext context) {
+    return Column(children: [
+      const SizedBox(height: 24),
+      Image.asset('assets/images/logo-ultrahome-services.webp', height: 80),
+      const SizedBox(height: 16),
+      const Text(
+        'Welcome to UltraHome Services',
+        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: kBlack),
+        textAlign: TextAlign.center,
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'Please log in or register an account.',
+        style: TextStyle(fontSize: 16, color: kBlack),
+        textAlign: TextAlign.center,
+      ),
+      const SizedBox(height: 24),
+    ]);
+  }
+}
+
+/// Форма логина
+class LoginForm extends StatefulWidget {
+  const LoginForm({Key? key}) : super(key: key);
+  @override
+  State<LoginForm> createState() => _LoginFormState();
+}
+
+class _LoginFormState extends State<LoginForm> {
+  final _userCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  bool _loading = false;
+  String? _error;
+
+  Future<void> _login() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/wp-json/jwt-auth/v1/token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': _userCtrl.text.trim(),
+          'password': _passCtrl.text,
+        }),
+      );
+      if (res.statusCode != 200) throw 'Invalid credentials';
+      final body = jsonDecode(res.body);
+      final token = body['token'] as String?;
+      if (token == null) throw 'No token';
+      await _storage.write(key: 'jwt', value: token);
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const AutoLoginWebView()));
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      setState(() { _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(children: [
+        const _LogoWelcome(),
+        TextField(
+          controller: _userCtrl,
+          decoration: _fieldDecoration('Username'),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _passCtrl,
+          decoration: _fieldDecoration('Password'),
+          obscureText: true,
+        ),
+        const SizedBox(height: 24),
+        if (_error != null) Text(_error!, style: const TextStyle(color: Colors.red)),
+        const SizedBox(height: 12),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: kGold,
+            foregroundColor: kBlack,
+            minimumSize: const Size.fromHeight(48),
+          ),
+          onPressed: _loading ? null : _login,
+          child: _loading
+              ? const CircularProgressIndicator(color: Colors.white)
+              : const Text('Login'),
+        ),
+        const SizedBox(height: 12),
+        TextButton(
+          onPressed: () {
+            // TODO: Forgot password flow
+          },
+          child: const Text('Forgot Password?'),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Форма регистрации
+class RegistrationForm extends StatefulWidget {
+  const RegistrationForm({Key? key}) : super(key: key);
+  @override
+  State<RegistrationForm> createState() => _RegistrationFormState();
+}
+
+class _RegistrationFormState extends State<RegistrationForm> {
+  final _first = TextEditingController();
+  final _last  = TextEditingController();
+  final _phone = TextEditingController();
+  final _email = TextEditingController();
+  final _addr  = TextEditingController();
+  final _city  = TextEditingController();
+  final _state = TextEditingController();
+  final _zip   = TextEditingController();
+  final _pass  = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(children: [
+        const _LogoWelcome(),
+        TextField(controller: _first, decoration: _fieldDecoration('First Name')),
+        const SizedBox(height: 12),
+        TextField(controller: _last,  decoration: _fieldDecoration('Last Name')),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _phone,
+          decoration: _fieldDecoration('Phone Number'),
+          keyboardType: TextInputType.phone,
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _email,
+          decoration: _fieldDecoration('Email'),
+          keyboardType: TextInputType.emailAddress,
+        ),
+        const SizedBox(height: 12),
+        TextField(controller: _addr, decoration: _fieldDecoration('Address')),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: TextField(controller: _city,  decoration: _fieldDecoration('City'))),
+          const SizedBox(width: 12),
+          Expanded(child: TextField(controller: _state, decoration: _fieldDecoration('State'))),
+        ]),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _zip,
+          decoration: _fieldDecoration('ZIP Code'),
+          keyboardType: TextInputType.number,
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _pass,
+          decoration: _fieldDecoration('Password'),
+          obscureText: true,
+        ),
+        const SizedBox(height: 24),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: kGold,
+            foregroundColor: kBlack,
+            minimumSize: const Size.fromHeight(48),
+          ),
+          onPressed: () {
+            // TODO: Registration logic
+          },
+          child: const Text('Register'),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Экран WebView с синхронизацией куки (iOS-only)
 class AutoLoginWebView extends StatefulWidget {
   const AutoLoginWebView({Key? key}) : super(key: key);
   @override
@@ -204,6 +320,7 @@ class AutoLoginWebView extends StatefulWidget {
 class _AutoLoginWebViewState extends State<AutoLoginWebView> {
   WebViewController? _controller;
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -211,124 +328,56 @@ class _AutoLoginWebViewState extends State<AutoLoginWebView> {
     _initAndLoad();
   }
 
-  /// Инициализация: проверка токена и синхронизация куки
   Future<void> _initAndLoad() async {
     final token = await _storage.read(key: 'jwt');
     if (token == null) {
-      await _logout();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const AuthScreen()),
+      );
       return;
     }
-
-    // Проверяем срок жизни токена
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    if (now >= _parseExpiry(token)) {
-      final didRefresh = await _tryRefresh(token);
-      if (!didRefresh) {
-        await _logout();
-        return;
-      }
-    }
-
-final freshTokenNullable = await _storage.read(key: 'jwt');
-if (freshTokenNullable != null) {
-  // Явно приводим к non-nullable локальной переменной
-  final freshToken = freshTokenNullable;
-  await _syncCookiesAndLoad(freshToken);
-} else {
-  await _logout();
-}
+    await _syncCookiesAndLoad(token);
   }
 
-  /// Попытка обновить токен по схеме refresh-token
-  Future<bool> _tryRefresh(String oldToken) async {
-    final refresh = await _storage.read(key: 'refresh_token');
-    if (refresh == null) return false;
+  Future<void> _syncCookiesAndLoad(String jwt) async {
+    setState(() { _loading = true; _error = null; });
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/wp-json/jwt-auth/v1/token/refresh'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'refresh_token': refresh}),
-      );
-      if (res.statusCode != 200) return false;
-      final body = jsonDecode(res.body);
-      final newToken = body['token'] as String?;
-      final newRefresh = body['refresh_token'] as String?;
-      if (newToken == null) return false;
-      await _storage.write(key: 'jwt', value: newToken);
-      if (newRefresh != null) {
-        await _storage.write(key: 'refresh_token', value: newRefresh);
-      }
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
+      // Сохраняем ещё раз
+      await _storage.write(key: 'jwt', value: jwt);
 
-  /// Синхронизация куки и загрузка WebView
-  Future<void> _syncCookiesAndLoad(String jwtToken) async {
-    setState(() => _loading = true);
-    try {
+      // Запрашиваем куки с сервера
       final res = await http.get(
         Uri.parse('$baseUrl/wp-json/custom/v1/get-auth-cookies'),
-        headers: {
-          'Authorization': 'Bearer $jwtToken',
-          'Content-Type': 'application/json',
-        },
+        headers: {'Authorization': 'Bearer $jwt'},
       );
-      if (res.statusCode == 401 || res.statusCode == 403) {
-        _showSnackBar(context, 'Сессия истекла, повторный вход…');
-        await _logout();
-        return;
-      }
-      if (res.statusCode != 200) {
-        throw 'Ошибка получения куки: ${res.statusCode}';
-      }
+      if (res.statusCode != 200) throw 'Cookie error ${res.statusCode}';
 
-      final raw = jsonDecode(res.body) as List<dynamic>;
-      final cookies = <Map<String, String>>[];
-      for (final item in raw) {
-        cookies.add({
-          'name':   item['name']   as String,
-          'value':  item['value']  as String,
-          'domain': item['domain'] as String,
-          'path':   item['path']   as String,
-        });
-      }
-      final unique = {
-        for (var c in cookies) '${c['name']}:${c['path']}': c
-      }.values.toList();
+      final raw = jsonDecode(res.body) as List;
+      final cookies = raw.map((e) => Map<String,String>.from(e)).toList();
+      final unique = {for (var c in cookies) '${c['name']}:${c['path']}': c}.values.toList();
 
-      await _cookieChannel.invokeMethod('setCookies', {
-        'cookies': unique,
-      });
+      // Отправляем в iOS WKWebView
+      await _cookieChannel.invokeMethod('setCookies', {'cookies': unique});
 
-      final ctrl = WebViewController();
-      ctrl
+      // Настраиваем WebView
+      final ctrl = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
-        ..setNavigationDelegate(
-          NavigationDelegate(onPageFinished: (_) {
-            setState(() => _loading = false);
-          }),
-        )
+        ..setNavigationDelegate(NavigationDelegate(onPageFinished: (_) {
+          setState(() => _loading = false);
+        }))
         ..loadRequest(Uri.parse('$baseUrl/mobile-app-home-subscriber/'));
 
       setState(() => _controller = ctrl);
     } catch (e) {
-      _showSnackBar(context, 'Ошибка: $e');
-      setState(() => _loading = false);
+      setState(() => _error = e.toString());
     }
   }
 
   Future<void> _logout() async {
     await _storage.delete(key: 'jwt');
-    await _storage.delete(key: 'refresh_token');
     await _cookieChannel.invokeMethod('setCookies', {'cookies': []});
     Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) => const LoginPage(),
-        transitionsBuilder: (_, a, __, c) =>
-            FadeTransition(opacity: a, child: c),
-      ),
+      MaterialPageRoute(builder: (_) => const AuthScreen()),
     );
   }
 
@@ -336,23 +385,18 @@ if (freshTokenNullable != null) {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('UltraHome Dashboard'),
+        title: const Text('UltraHome Dashboard', style: TextStyle(color: kBlack)),
+        backgroundColor: kGold,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Logout',
-            onPressed: _logout,
-          ),
+          IconButton(icon: const Icon(Icons.logout, color: kBlack), onPressed: _logout),
         ],
       ),
-      body: Stack(
-        children: [
-          if (_controller != null)
-            WebViewWidget(controller: _controller!),
-          if (_loading)
-            const Center(child: CircularProgressIndicator()),
-        ],
-      ),
+      body: Stack(children: [
+        if (_controller != null) WebViewWidget(controller: _controller!),
+        if (_loading) const Center(child: CircularProgressIndicator()),
+        if (_error != null)
+          Center(child: Text('Error: $_error', style: const TextStyle(color: Colors.red))),
+      ]),
     );
   }
 }

@@ -1,7 +1,10 @@
 # Uncomment this line to define a global platform for your project
 platform :ios, '12.0'
+
+# Подключаем плагины как фреймворки (нужно многим современным плагинам)
 use_frameworks!
-# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+
+# Отключаем аналитику CocoaPods для ускорения сборки
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
 project 'Runner', {
@@ -28,23 +31,22 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  use_frameworks!
-  # Если вам нужны modular headers, раскомментируйте ниже:
-  # use_modular_headers!
-
+  # Подключаем все Flutter-плагины автоматически
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 
+  # Тесты приложения
   target 'RunnerTests' do
     inherit! :search_paths
+    # Здесь можно добавить дополнительные зависимости для тестов
   end
 end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
-    # Применяем дополнительные настройки Flutter
+    # Применяем стандартные настройки Flutter
     flutter_additional_ios_build_settings(target)
 
-    # Устанавливаем единый deployment target для всех подов
+    # Перекрываем deployment target на уровне каждого модуля
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '12.0'
     end

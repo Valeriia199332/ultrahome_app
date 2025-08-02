@@ -1,3 +1,4 @@
+import com.android.build.gradle.LibraryExtension
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -8,7 +9,7 @@ plugins {
 android {
     namespace = "com.example.ultrahome_app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "27.0.12077973"  
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -41,4 +42,20 @@ android {
 
 flutter {
     source = "../.."
+}
+// ---------------------------------------------------------------
+// Для webview_cookie_manager: явно задаём namespace в подпроекте
+// ---------------------------------------------------------------
+subprojects {
+  // ищем плагин по имени
+  if (name.contains("webview_cookie_manager")) {
+    // как только он применится как library
+    plugins.withId("com.android.library") {
+      // настраиваем android-расширение
+      extensions.configure<LibraryExtension>("android") {
+        // Здесь подставьте ваш пакет вместо com.example…
+        namespace = "com.example.webview_cookie_manager"
+      }
+    }
+  }
 }
